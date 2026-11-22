@@ -184,6 +184,29 @@ function logEvent(e) {
 	);
 }
 
+
+// Hosted loader: /files/v1/loaders/<40 hex>.lua serves loader.lua with this script's config baked in.
+const loaderIdFor = (script) => sha256(script.secret + ":" + script.id).slice(0, 40);
+
+function publicBase(req) {
+	if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/+$/, "");
+	const proto = TRUST_PROXY && req.headers["x-forwarded-proto"] ? String(req.headers["x-forwarded-proto"]).split(",")[0].trim() : "http";
+	const host = (TRUST_PROXY && req.headers["x-forwarded-host"]) || req.headers.host || `${HOST}:${PORT}`;
+	return `${proto}://${host}`;
+}
+
+function serveLoader(req, res, loaderId) {
+	if (!rateLimit("loader", clientIp(req), 60, 60)) return send(res, 429, "Too many requests");
+	const script = db.prepare("SELECT id, secret, enabled FROM scripts").all().find((x) => loaderIdFor(x) === loaderId);
+	if (!script || !script.enabled) return send(res, 404, "Not found");
+	let lua = fs.readFileSync(path.join(__dirname, "loader", "loader.lua"), "utf8");
+	lua = lua
+		.replace(/apiUrl = "[^"]*"/, () => `apiUrl = "${publicBase(req)}/api/v1/auth"`)
+		.replace(/scriptId = "[^"]*"/, () => `scriptId = "${script.id}"`)
+		.replace(/secret = "[^"]*"/, () => `secret = "${script.secret}"`);
+	send(res, 200, lua);
+}
+
 // Public client API: POST /api/v1/auth
 const MESSAGES = {
 	OK: "Authenticated.",
@@ -360,7 +383,7 @@ route("POST", "/admin/scripts", (req, res, { body }) => {
 
 route("GET", "/admin/scripts/([a-f0-9]+)", (req, res, { params }) => {
 	const s = db.prepare("SELECT id, name, secret, source, version, enabled FROM scripts WHERE id = ?").get(params[0]);
-	s ? send(res, 200, s) : send(res, 404, { error: "Not found" });
+	s ? send(res, 200, { ...s, loaderId: loaderIdFor(s) }) : send(res, 404, { error: "Not found" });
 });
 
 route("PATCH", "/admin/scripts/([a-f0-9]+)", (req, res, { params, body }) => {
@@ -518,6 +541,8 @@ const server = http.createServer(async (req, res) => {
 
 		if (req.method === "GET" && pathname === "/favicon.ico") return send(res, 204, "");
 		if (req.method === "GET" && pathname === "/api/v1/ping") return send(res, 200, { ok: true, service: "NYXARIS AUTH", ts: now() });
+		const lm = pathname.match(/^\/files\/v1\/loaders\/([a-f0-9]{40})\.lua$/);
+		if (req.method === "GET" && lm) return serveLoader(req, res, lm[1]);
 		if (req.method === "POST" && pathname === "/api/v1/auth") return await handleAuth(req, res);
 
 		if (pathname.startsWith("/admin/")) {
