@@ -144,12 +144,14 @@ async function editScript(id) {
 
 async function loaderSnippet(id) {
 	const s = await api("GET", "/admin/scripts/" + id);
-	const text = `-- Paste this into your distributed loader config (loader/loader.lua)\nlocal CONFIG = {\n\tapiUrl = "${location.origin}/api/v1/auth",\n\tscriptId = "${s.id}",\n\tsecret = "${s.secret}",\n}`;
-	modal("Loader config: " + s.name, h("div", {},
+	const url = `${location.origin}/files/v1/loaders/${s.loaderId}.lua`;
+	const text = `script_key = "KEY"; loadstring(game:HttpGet("${url}"))()`;
+	modal("Loader: " + s.name, h("div", {},
+		h("div", { class: "row" }, "Give this to your users (they replace KEY with their key):"),
 		h("pre", {}, text),
 		h("div", { class: "row", style: "margin-top:10px" },
 			h("button", { class: "btn g", onclick: () => copy(text) }, "Copy"),
-			h("button", { class: "btn g", onclick: async () => { if (confirm("Rotate secret? Existing loaders stop verifying until updated.")) { await api("PATCH", "/admin/scripts/" + id, { rotateSecret: true }); toast("Rotated"); loaderSnippet(id); } } }, "Rotate secret"))));
+			h("button", { class: "btn g", onclick: async () => { if (confirm("Rotate secret? The old loader link stops working and a new one is generated.")) { await api("PATCH", "/admin/scripts/" + id, { rotateSecret: true }); toast("Rotated"); loaderSnippet(id); } } }, "Rotate secret"))));
 }
 
 // Keys.
