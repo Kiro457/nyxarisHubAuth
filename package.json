@@ -1,0 +1,12 @@
+{
+	"name": "nyxaris-auth",
+	"version": "1.0.0",
+	"description": "NYXARIS AUTH - self-hosted script licensing (Node + SQLite, zero dependencies)",
+	"main": "server.js",
+	"engines": { "node": ">=22.5" },
+	"scripts": {
+		"start": "node --no-warnings server.js"
+	},
+	"license": "UNLICENSED",
+	"private": true
+}
