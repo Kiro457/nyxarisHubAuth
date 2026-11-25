@@ -350,18 +350,40 @@ route("POST", "/admin/password", (req, res, { session, body }) => {
 	send(res, 200, { ok: true });
 });
 
-route("GET", "/admin/stats", (req, res) => {
+route("GET", "/admin/stats", (req, res, { query }) => {
 	const t = now();
+	const sc = query.get("script") || null;
+	const kw = sc ? " AND scriptId = ?" : "";
 	const one = (sql, ...a) => db.prepare(sql).get(...a).c;
+	const sa = sc ? [sc] : [];
 	send(res, 200, {
 		scripts: one("SELECT COUNT(*) c FROM scripts"),
-		keys: one("SELECT COUNT(*) c FROM keys"),
-		activeKeys: one("SELECT COUNT(*) c FROM keys WHERE status='active' AND (expiresAt IS NULL OR expiresAt > ?)", t),
-		bannedKeys: one("SELECT COUNT(*) c FROM keys WHERE status='banned'"),
-		auths24h: one("SELECT COUNT(*) c FROM logs WHERE result='OK' AND ts > ?", t - 86400),
-		fails24h: one("SELECT COUNT(*) c FROM logs WHERE result!='OK' AND ts > ?", t - 86400),
+		keys: one(`SELECT COUNT(*) c FROM keys WHERE 1=1${kw}`, ...sa),
+		activeKeys: one(`SELECT COUNT(*) c FROM keys WHERE status='active' AND (expiresAt IS NULL OR expiresAt > ?)${kw}`, t, ...sa),
+		bannedKeys: one(`SELECT COUNT(*) c FROM keys WHERE status='banned'${kw}`, ...sa),
+		auths24h: one(`SELECT COUNT(*) c FROM logs WHERE result='OK' AND ts > ?${kw}`, t - 86400, ...sa),
+		fails24h: one(`SELECT COUNT(*) c FROM logs WHERE result!='OK' AND ts > ?${kw}`, t - 86400, ...sa),
+		totalExecs: one(`SELECT COUNT(*) c FROM logs WHERE result='OK'${kw}`, ...sa),
 		blacklist: one("SELECT COUNT(*) c FROM blacklist"),
 	});
+});
+
+route("GET", "/admin/chart", (req, res, { query }) => {
+	const days = intOr(parseInt(query.get("days")), 14, 1, 90);
+	const args = [now() - days * 86400];
+	let where = "ts > ?";
+	if (query.get("script")) { where += " AND scriptId = ?"; args.push(query.get("script")); }
+	const rows = db.prepare(
+		`SELECT strftime('%Y-%m-%d', ts, 'unixepoch') AS day, SUM(result='OK') AS ok, SUM(result!='OK') AS fail FROM logs WHERE ${where} GROUP BY day`
+	).all(...args);
+	const map = new Map(rows.map((r) => [r.day, r]));
+	const out = [];
+	for (let i = days - 1; i >= 0; i--) {
+		const day = new Date((now() - i * 86400) * 1000).toISOString().slice(0, 10);
+		const r = map.get(day);
+		out.push({ day, ok: r ? Number(r.ok) : 0, fail: r ? Number(r.fail) : 0 });
+	}
+	send(res, 200, out);
 });
 
 // Scripts.
@@ -412,15 +434,22 @@ route("DELETE", "/admin/scripts/([a-f0-9]+)", (req, res, { params }) => {
 route("GET", "/admin/keys", (req, res, { query }) => {
 	const where = [];
 	const args = [];
+	const t = now();
 	if (query.get("script")) { where.push("k.scriptId = ?"); args.push(query.get("script")); }
 	if (query.get("q")) { where.push("(k.key LIKE ? OR k.note LIKE ?)"); const q = `%${query.get("q")}%`; args.push(q, q); }
-	const limit = intOr(parseInt(query.get("limit")), 200, 1, 1000);
+	const st = query.get("status");
+	if (st === "active") { where.push("k.status='active' AND (k.expiresAt IS NULL OR k.expiresAt > ?)"); args.push(t); }
+	else if (st === "banned") where.push("k.status='banned'");
+	else if (st === "expired") { where.push("k.expiresAt IS NOT NULL AND k.expiresAt <= ?"); args.push(t); }
+	const w = where.length ? "WHERE " + where.join(" AND ") : "";
+	const limit = intOr(parseInt(query.get("limit")), 20, 1, 200);
+	const offset = intOr(parseInt(query.get("offset")), 0, 0, 1e9);
+	const total = db.prepare(`SELECT COUNT(*) AS c FROM keys k ${w}`).get(...args).c;
 	const rows = db.prepare(
 		`SELECT k.*, s.name AS scriptName, (SELECT COUNT(*) FROM hwids h WHERE h.keyId = k.id) AS hwidCount
-		 FROM keys k JOIN scripts s ON s.id = k.scriptId ${where.length ? "WHERE " + where.join(" AND ") : ""}
-		 ORDER BY k.id DESC LIMIT ?`
-	).all(...args, limit);
-	send(res, 200, rows);
+		 FROM keys k JOIN scripts s ON s.id = k.scriptId ${w} ORDER BY k.id DESC LIMIT ? OFFSET ?`
+	).all(...args, limit, offset);
+	send(res, 200, { rows, total });
 });
 
 route("POST", "/admin/keys", (req, res, { body }) => {
